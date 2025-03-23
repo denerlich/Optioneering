@@ -2,40 +2,12 @@
 import pandas as pd
 import numpy as np
 import requests
-import random
 import yfinance as yf
 import logging
-from ib_insync import IB, Stock, util
 
 # Logging configuration
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
-
-# === IBKR Connection ===
-def connect_ibkr():
-    ib = IB()
-    client_id = random.randint(1000, 9999)
-    ib.connect("127.0.0.1", 7496, clientId=client_id)
-    logger.debug("Connected to IBKR")
-    return ib
-
-def fetch_ibkr_stock_data(ib, ticker, duration='1 Y'):
-    contract = Stock(ticker, 'SMART', 'USD')
-    ib.qualifyContracts(contract)
-    bars = ib.reqHistoricalData(contract, endDateTime='', durationStr=duration, barSizeSetting='1 day', whatToShow='TRADES', useRTH=True)
-    if not bars:
-        return None
-    df = util.df(bars)
-    df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
-    df.set_index('date', inplace=True)
-    return df
-
-def fetch_ibkr_implied_volatility(ib, ticker):
-    contract = Stock(ticker, 'SMART', 'USD')
-    ib.qualifyContracts(contract)
-    ticker_data = ib.reqMktData(contract, '', False, False)
-    ib.sleep(2)
-    return ticker_data.modelGreeks.impliedVolatility if ticker_data.modelGreeks and ticker_data.modelGreeks.impliedVolatility is not None else None
 
 # === Fundamental Data ===
 def is_missing(value):
@@ -174,27 +146,59 @@ def calculate_technical_indicators(hist):
         **performance
     }
 
-def calculate_options_indicators_ibkr(ib, ticker):
-    iv_snapshot = fetch_ibkr_implied_volatility(ib, ticker)
-    return {"Average IV (Puts)": iv_snapshot}
+# === Options Data (Replacing IBKR Implied Volatility) ===
+def fetch_fmp_options_data(ticker, api_key):
+    """
+    FMP doesn't directly provide implied volatility in a free tier, but we can use options chain data
+    if available in your plan. Here, we'll simulate an average IV estimate using historical volatility.
+    """
+    url = f'https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}?apikey={api_key}'
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if 'historical' in data and data['historical']:
+                df = pd.DataFrame(data['historical'])
+                df['close'] = df['close'].astype(float)
+                returns = df['close'].pct_change().dropna()
+                historical_vol = returns.std() * (252 ** 0.5)  # Annualized volatility
+                return {"Average IV (Puts)": historical_vol}
+    except Exception as e:
+        logger.error(f"FMP options data error: {e}")
+    return {"Average IV (Puts)": "N/A"}
+
+def calculate_options_indicators(ticker, api_keys):
+    # Use FMP for a volatility proxy since IBKR is unavailable
+    options_data = fetch_fmp_options_data(ticker, api_keys.get("FMP_API_KEY", ""))
+    return options_data
 
 # === Main Data Ingestion Function ===
 def ingest_data(ticker, api_keys):
-    ib = connect_ibkr()
     try:
-        ibkr_hist = fetch_ibkr_stock_data(ib, ticker)
-        hist = ibkr_hist if ibkr_hist is not None and not ibkr_hist.empty else yf.Ticker(ticker).history(period="1y")
+        # Use yfinance for historical data instead of IBKR
+        hist = yf.Ticker(ticker).history(period="1y")
+        if hist.empty:
+            logger.warning(f"No historical data available for {ticker} from Yahoo Finance.")
+            hist = pd.DataFrame()
+
         fundamentals_fallback = get_fundamental_data(ticker, api_keys)
         yfa = yf.Ticker(ticker)
         adv_fund = calculate_fundamentals(yfa)
         combined_fundamentals = {k: adv_fund.get(k, fundamentals_fallback.get(k, "N/A")) for k in set(fundamentals_fallback) | set(adv_fund)}
         technicals = calculate_technical_indicators(hist)
-        options_data = calculate_options_indicators_ibkr(ib, ticker)
+        options_data = calculate_options_indicators(ticker, api_keys)
+
         return {
             "history": hist,
             "fundamentals": combined_fundamentals,
             "technicals": technicals,
             "options_data": options_data
         }
-    finally:
-        ib.disconnect()
+    except Exception as e:
+        logger.error(f"Error ingesting data for {ticker}: {e}")
+        return {
+            "history": pd.DataFrame(),
+            "fundamentals": {},
+            "technicals": {},
+            "options_data": {}
+        }
