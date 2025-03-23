@@ -3,7 +3,6 @@ import requests
 import yfinance as yf
 import numpy as np
 import streamlit as st
-from ib_insync import IB, Stock, util
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +72,10 @@ def calculate_technical_indicators(hist):
 
 def fetch_ibkr_historical_data(ticker, duration='1 Y'):
     try:
+        from ib_insync import IB, Stock, util  # Local import to avoid event loop issues
         ib = IB()
         client_id = st.session_state.get("ibkrClientId", 1234)
         ib.connect("127.0.0.1", 7496, clientId=client_id)
-
         contract = Stock(ticker, "SMART", "USD")
         ib.qualifyContracts(contract)
         bars = ib.reqHistoricalData(
@@ -90,34 +89,33 @@ def fetch_ibkr_historical_data(ticker, duration='1 Y'):
         )
         df = util.df(bars)
         ib.disconnect()
-
         if df.empty:
             return None
         df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}, inplace=True)
         df.set_index("date", inplace=True)
-        logger.info(f"Retrieved {len(df)} rows of historical data from IBKR for {ticker}")
         return df
     except Exception as e:
         logger.warning(f"Failed to fetch IBKR historical data for {ticker}: {e}")
         return None
 
+
 def fetch_ibkr_implied_volatility(ticker):
     try:
+        from ib_insync import IB, Stock
         ib = IB()
         client_id = st.session_state.get("ibkrClientId", 1234)
         ib.connect("127.0.0.1", 7496, clientId=client_id)
-
         contract = Stock(ticker, "SMART", "USD")
         ib.qualifyContracts(contract)
         snapshot = ib.reqMktData(contract, "", False, False)
         ib.sleep(2)
         iv = snapshot.modelGreeks.impliedVolatility if snapshot.modelGreeks else None
         ib.disconnect()
-        logger.info(f"IBKR IV: {iv}")
         return iv
     except Exception as e:
         logger.warning(f"Could not fetch IV from IBKR for {ticker}: {e}")
         return None
+
 
 # === Ingest Function ===
 
