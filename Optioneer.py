@@ -42,6 +42,31 @@ if uploaded_file:
         st.sidebar.error("File must contain 'Tickers' and 'APICodes' tabs with valid data.")
         logger.error("Configuration file is missing required tabs or data.")
 
+# Scoring function included directly here (enhanced implementation)
+def calculate_scores(fundamentals, technicals, thresholds):
+    fund_score = 0
+    tech_score = 0
+
+    # Fundamental Scoring
+    if fundamentals.get("Debt-to-Equity", float('inf')) <= thresholds["Debt-to-Equity"]:
+        fund_score += 1
+    if fundamentals.get("Current Ratio", 0) >= thresholds["Current Ratio"]:
+        fund_score += 1
+    if fundamentals.get("ROE", 0) >= thresholds["ROE"]:
+        fund_score += 1
+
+    # Technical Scoring
+    rsi = technicals.get("RSI", 50)
+    if thresholds["RSI_low"] <= rsi <= thresholds["RSI_high"]:
+        tech_score += 1
+    if technicals.get("Price_vs_SMA50", 0) >= 0:
+        tech_score += 1
+    if technicals.get("MACD", 0) > technicals.get("MACD_signal", 0):
+        tech_score += 1
+
+    overall_score = fund_score + tech_score
+    return fund_score, tech_score, overall_score
+
 # Main function
 def main():
     if not st.session_state["tickers"]:
@@ -76,14 +101,16 @@ def main():
 
         # Calculate scores
         try:
-            fund_score, tech_score, overall_score = calculate_scores(data["fundamentals"], data["technicals"], thresholds)
+            fund_score, tech_score, overall_score = calculate_scores(
+                data["fundamentals"], data["technicals"], thresholds
+            )
             logger.info(f"Scores calculated - Fundamental: {fund_score}, Technical: {tech_score}, Overall: {overall_score}")
         except KeyError as e:
             st.error(f"Missing data for score calculation: {e}")
             logger.error(f"KeyError during score calculation: {e}")
             return
 
-        # Get option recommendation
+        # Option recommendation (make sure this function is available)
         try:
             option_rec = get_option_recommendation(overall_score, data["technicals"]["Current Price"])
             logger.info(f"Option recommendation: {option_rec}")
