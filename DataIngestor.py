@@ -9,14 +9,20 @@ logger = logging.getLogger(__name__)
 def fetch_fmp_ratios(ticker, api_key):
     url = f'https://financialmodelingprep.com/api/v3/ratios/{ticker}?apikey={api_key}'
     try:
-        logger.debug(f"FMP Request URL: {url}")
         response = requests.get(url, timeout=10)
-        response.raise_for_status()
         data = response.json()
-        logger.info(f"FMP ratios response: {data}")
-        return data[0] if data else {}
+        if response.ok and data:
+            latest = data[0]
+            return {
+                'Debt-to-Equity Ratio': latest.get('debtEquityRatio'),
+                'Current Ratio': latest.get('currentRatio'),
+                'Return on Equity (%)': latest.get('returnOnEquity') * 100 if latest.get('returnOnEquity') else None,
+            }
+        else:
+            logger.error(f"Failed to fetch FMP ratios for {ticker}: Empty or invalid response.")
+            return {}
     except Exception as e:
-        logger.error(f"FMP Ratios fetch failed: {e}")
+        logger.error(f"Exception occurred while fetching FMP ratios for {ticker}: {e}")
         return {}
 
 def fetch_alpha_vantage_overview(ticker, api_key):
