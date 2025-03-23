@@ -4,14 +4,18 @@ import numpy as np
 import requests
 import random
 import datetime
-import plotly.graph_objects as go
+try:
+    import plotly.graph_objects as go  # Required for candlestick charts
+except ModuleNotFoundError:
+    st.error("Plotly is not installed. Please ensure it’s included in requirements.txt.")
+    st.stop()
 import io
 import yfinance as yf
 import asyncio
 import nest_asyncio
 import logging
 from ib_insync import *
-from groq import Groq  # Groq API integration
+from groq import Groq
 
 # === Logging Configuration ===
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
@@ -35,19 +39,13 @@ st.sidebar.header("Upload Configuration File")
 uploaded_file = st.sidebar.file_uploader("Upload Excel file with Tickers and API Codes", type=["xlsx"])
 
 if uploaded_file:
-    # Read Excel file
     xl = pd.ExcelFile(uploaded_file)
-    
-    # Load Tickers from "Tickers" tab
     if "Tickers" in xl.sheet_names:
         tickers_df = pd.read_excel(uploaded_file, sheet_name="Tickers")
-        st.session_state["tickers"] = tickers_df["Ticker"].dropna().tolist()[:200]  # Limit to 200 tickers
-    
-    # Load API Keys from "APICodes" tab
+        st.session_state["tickers"] = tickers_df["Ticker"].dropna().tolist()[:200]
     if "APICodes" in xl.sheet_names:
         api_df = pd.read_excel(uploaded_file, sheet_name="APICodes")
         st.session_state["api_keys"] = dict(zip(api_df["API"], api_df["Secret"]))
-    
     if st.session_state["tickers"] and st.session_state["api_keys"]:
         st.sidebar.success("File uploaded successfully!")
     else:
@@ -257,7 +255,7 @@ def get_grok_insight(ticker, fundamentals, technicals):
     """
     try:
         response = groq_client.chat.completions.create(
-            model="mixtral-8x7b-32768",  # Adjust model as needed
+            model="mixtral-8x7b-32768",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200
         )
