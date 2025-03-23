@@ -1,14 +1,18 @@
-# Optioneer.py
 import streamlit as st
 import pandas as pd
 import asyncio
 import nest_asyncio
+import logging
 from DataIngestor import ingest_data
 from LLMAdviser import get_grok_insight
 from StreamlitUI import render_ui
 
 # Apply nest_asyncio
 nest_asyncio.apply()
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 # Set page config as the first Streamlit command
 st.set_page_config(page_title="AI Options Selling Bot with Grok", layout="wide")
@@ -33,52 +37,16 @@ if uploaded_file:
         st.session_state["api_keys"] = dict(zip(api_df["API"], api_df["Secret"]))
     if st.session_state["tickers"] and st.session_state["api_keys"]:
         st.sidebar.success("File uploaded successfully!")
+        logger.info("Configuration file uploaded and processed successfully.")
     else:
         st.sidebar.error("File must contain 'Tickers' and 'APICodes' tabs with valid data.")
+        logger.error("Configuration file is missing required tabs or data.")
 
-# Scoring and recommendation logic
-def is_missing(value):
-    return value is None or (isinstance(value, float) and pd.isna(value))
-
-def calculate_scores(fund, tech, thresholds):
-    fund_score = 0
-    if not is_missing(fund.get("Debt-to-Equity Ratio")) and fund["Debt-to-Equity Ratio"] <= thresholds["Debt-to-Equity"]:
-        fund_score += 10
-    if not is_missing(fund.get("Current Ratio")) and fund["Current Ratio"] >= thresholds["Current Ratio"]:
-        fund_score += 10
-    if not is_missing(fund.get("Free Cash Flow")) and fund["Free Cash Flow"] > 0:
-        fund_score += 10
-    if not is_missing(fund.get("Return on Equity (%)")) and fund["Return on Equity (%)"] >= thresholds["ROE"]:
-        fund_score += 10
-    fund_score = (fund_score / 40) * 10 * 0.6
-
-    tech_score = 0
-    rsi = tech.get("RSI", 0)
-    if thresholds["RSI_low"] <= rsi <= thresholds["RSI_high"]:
-        tech_score += 10
-    if tech.get("MACD Histogram", 0) > 0:
-        tech_score += 10
-    for perf in ["7-day Perf (%)", "30-day Perf (%)", "60-day Perf (%)"]:
-        value = tech.get(perf, 0)
-        if value > 2:
-            tech_score += 10
-    tech_score = (tech_score / 40) * 10 * 0.4
-
-    overall_score = fund_score + tech_score
-    return fund_score, tech_score, overall_score
-
-def get_option_recommendation(score, current_price):
-    if score >= 8:
-        return {"Expiration": "60 days", "Delta": 50, "Strike": current_price}
-    elif score >= 6:
-        return {"Expiration": "45 days", "Delta": 35, "Strike": current_price * 0.97}
-    else:
-        return {"Expiration": "30 days", "Delta": 20, "Strike": current_price * 0.90}
-
-# Main orchestration
+# Main function
 def main():
     if not st.session_state["tickers"]:
-        render_ui(None, {}, "", "")
+        st.warning("Please upload an Excel file with tickers and API keys to proceed.")
+        logger.warning("No tickers available. Awaiting file upload.")
         return
 
     ticker_input = st.selectbox("Select Ticker Symbol", st.session_state["tickers"], index=0)
@@ -86,19 +54,55 @@ def main():
 
     if run_button and ticker_input:
         ticker = ticker_input.upper()
-        with st.spinner("Fetching data..."):
+        logger.info(f"Initiating analysis for ticker: {ticker}")
+
+        # Fetch data
+        try:
             data = ingest_data(ticker, st.session_state["api_keys"])
-            thresholds = {"Debt-to-Equity": 0.5, "Current Ratio": 1.5, "ROE": 15.0, "RSI_low": 40, "RSI_high": 60}
+            logger.debug(f"Data fetched for {ticker}: {data}")
+        except Exception as e:
+            st.error(f"Error fetching data for {ticker}: {e}")
+            logger.exception(f"Exception during data ingestion for {ticker}")
+            return
+
+        # Define thresholds
+        thresholds = {
+            "Debt-to-Equity": st.sidebar.number_input("Max Debt-to-Equity Ratio", min_value=0.0, value=0.5, step=0.1),
+            "Current Ratio": st.sidebar.number_input("Min Current Ratio", min_value=0.0, value=1.5, step=0.1),
+            "ROE": st.sidebar.number_input("Min Return on Equity (%)", value=15.0, step=1.0),
+            "RSI_low": st.sidebar.number_input("RSI Lower Bound", min_value=0, max_value=100, value=40, step=1),
+            "RSI_high": st.sidebar.number_input("RSI Upper Bound", min_value=0, max_value=100, value=60, step=1),
+        }
+
+        # Calculate scores
+        try:
             fund_score, tech_score, overall_score = calculate_scores(data["fundamentals"], data["technicals"], thresholds)
-            current_price = data["technicals"].get("Current Price")
-            if current_price is not None:
-                option_rec = get_option_recommendation(overall_score, current_price)
-            else:
-                st.error("Technical data missing: Unable to retrieve 'Current Price'. Check data source.")
-                return
-            data.update({"fund_score": fund_score, "tech_score": tech_score, "overall_score": overall_score, "option_rec": option_rec})
+            logger.info(f"Scores calculated - Fundamental: {fund_score}, Technical: {tech_score}, Overall: {overall_score}")
+        except KeyError as e:
+            st.error(f"Missing data for score calculation: {e}")
+            logger.error(f"KeyError during score calculation: {e}")
+            return
+
+        # Get option recommendation
+        try:
+            option_rec = get_option_recommendation(overall_score, data["technicals"]["Current Price"])
+            logger.info(f"Option recommendation: {option_rec}")
+        except KeyError as e:
+            st.error(f"Technical data missing: Unable to retrieve 'Current Price'. Check data source.")
+            logger.error(f"KeyError: 'Current Price' not found in technical data for {ticker}")
+            return
+
+        # Get Grok insight
+        try:
             grok_insight = get_grok_insight(ticker, data["fundamentals"], data["technicals"], st.session_state["api_keys"].get("GROQ_API_KEY", ""))
-            render_ui(data, thresholds, grok_insight, ticker)
+            logger.info(f"Grok insight retrieved for {ticker}")
+        except Exception as e:
+            st.error(f"Error retrieving Grok insight: {e}")
+            logger.exception(f"Exception during Grok insight retrieval for {ticker}")
+            grok_insight = "Grok analysis unavailable."
+
+        # Render UI
+        render_ui(data, thresholds, grok_insight, ticker)
 
 if __name__ == "__main__":
     main()
