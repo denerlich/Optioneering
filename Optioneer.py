@@ -5,28 +5,23 @@ import requests
 import random
 import datetime
 try:
-    import plotly.graph_objects as go  # Required for candlestick charts
+    import plotly.graph_objects as go  # For candlestick charts
 except ModuleNotFoundError:
-    st.error("Plotly is not installed. Please ensure it’s included in requirements.txt.")
+    st.error("Plotly is not installed. Please ensure it’s in requirements.txt.")
     st.stop()
 import io
 import yfinance as yf
 import asyncio
 import nest_asyncio
 import logging
-from ib_insync import *
-from groq import Groq
+from groq import Groq  # Groq API integration
+
+# Apply nest_asyncio at the top to patch asyncio for Streamlit’s threading model
+nest_asyncio.apply()
 
 # === Logging Configuration ===
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
-
-# === Asyncio Setup ===
-nest_asyncio.apply()
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-
-pd.options.display.float_format = '{:.2f}'.format
 
 # === Session State for API Keys and Tickers ===
 if "api_keys" not in st.session_state:
@@ -63,8 +58,9 @@ else:
     st.error("GROQ_API_KEY not found. Please upload a valid Excel file.")
     st.stop()
 
-# === IBKR Connection ===
+# === IBKR Connection (Import ib_insync only when needed) ===
 def connect_ibkr():
+    from ib_insync import IB, Stock, util  # Import here to avoid top-level event loop issue
     ib = IB()
     if "ibkrClientId" not in st.session_state:
         st.session_state["ibkrClientId"] = random.randint(1000, 9999)
@@ -73,6 +69,7 @@ def connect_ibkr():
     return ib
 
 def fetch_ibkr_stock_data(ib, ticker, duration='1 Y'):
+    from ib_insync import Stock, util  # Local import
     contract = Stock(ticker, 'SMART', 'USD')
     ib.qualifyContracts(contract)
     bars = ib.reqHistoricalData(contract, endDateTime='', durationStr=duration, barSizeSetting='1 day', whatToShow='TRADES', useRTH=True)
@@ -84,6 +81,7 @@ def fetch_ibkr_stock_data(ib, ticker, duration='1 Y'):
     return df
 
 def fetch_ibkr_implied_volatility(ib, ticker):
+    from ib_insync import Stock  # Local import
     contract = Stock(ticker, 'SMART', 'USD')
     ib.qualifyContracts(contract)
     ticker_data = ib.reqMktData(contract, '', False, False)
