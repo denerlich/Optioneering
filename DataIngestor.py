@@ -2,9 +2,12 @@ import logging
 import requests
 import yfinance as yf
 import numpy as np
-import streamlit as st  # Required for explicit logging in Streamlit UI
+import streamlit as st
+from ib_insync import IB, Stock, util
 
 logger = logging.getLogger(__name__)
+
+# === Fetch from FMP and Alpha Vantage ===
 
 def fetch_fmp_ratios(ticker, api_key):
     url = f'https://financialmodelingprep.com/api/v3/ratios/{ticker}?apikey={api_key}'
@@ -14,19 +17,14 @@ def fetch_fmp_ratios(ticker, api_key):
         data = response.json()
         if data:
             latest = data[0]
-            ratios = {
-                'Debt-to-Equity Ratio (FMP)': latest.get('debtEquityRatio'),
+            return {
+                'Debt-to-Equity (FMP)': latest.get('debtEquityRatio'),
                 'Current Ratio (FMP)': latest.get('currentRatio'),
                 'ROE (%) (FMP)': latest.get('returnOnEquity') * 100 if latest.get('returnOnEquity') else None,
             }
-            logger.info(f"FMP ratios for {ticker}: {ratios}")
-            return ratios
-        else:
-            logger.warning(f"No FMP ratios data returned for {ticker}.")
-            return {}
     except Exception as e:
-        logger.error(f"FMP Ratios fetch failed for {ticker}: {e}")
-        return {}
+        logger.warning(f"FMP fetch failed for {ticker}: {e}")
+    return {}
 
 def fetch_alpha_vantage_overview(ticker, api_key):
     url = f'https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={api_key}'
@@ -34,20 +32,20 @@ def fetch_alpha_vantage_overview(ticker, api_key):
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
-        overview = {
-            "Debt-to-Equity Ratio (Alpha)": data.get("DebtToEquity"),
+        return {
+            "Debt-to-Equity (Alpha)": data.get("DebtToEquity"),
             "Current Ratio (Alpha)": data.get("CurrentRatio"),
             "ROE (%) (Alpha)": data.get("ReturnOnEquityTTM"),
         }
-        logger.info(f"Alpha Vantage overview for {ticker}: {overview}")
-        return overview
     except Exception as e:
-        logger.error(f"Alpha Vantage fetch failed for {ticker}: {e}")
+        logger.warning(f"Alpha Vantage fetch failed for {ticker}: {e}")
         return {}
+
+# === Technicals ===
 
 def calculate_technical_indicators(hist):
     if hist.empty:
-        logger.error("Historical data empty, cannot calculate technicals.")
+        st.error("No historical data for technical analysis.")
         return {}
 
     latest_close = hist['Close'].iloc[-1]
@@ -63,64 +61,119 @@ def calculate_technical_indicators(hist):
     signal_line = macd_line.ewm(span=9).mean()
     macd_hist = (macd_line - signal_line).iloc[-1]
 
-    performance = {
-        "7-day Perf (%)": (latest_close / hist['Close'].iloc[-7] - 1) * 100,
-        "30-day Perf (%)": (latest_close / hist['Close'].iloc[-30] - 1) * 100,
-        "60-day Perf (%)": (latest_close / hist['Close'].iloc[-60] - 1) * 100
-    }
-
     technicals = {
         "Current Price": latest_close,
-        "RSI": rsi if not np.isnan(rsi) else "N/A",
-        "MACD Histogram": macd_hist,
-        **performance
+        "RSI": round(rsi, 2) if not np.isnan(rsi) else "N/A",
+        "MACD Histogram": round(macd_hist, 2),
     }
-    logger.info(f"Technicals: {technicals}")
+    logger.info(f"Technical indicators for {hist.index[-1].date()}: {technicals}")
     return technicals
 
-# Single, correctly defined ingest_data function with explicit Streamlit logging
-def ingest_data(ticker, api_keys):
+# === IBKR Integration ===
+
+def fetch_ibkr_historical_data(ticker, duration='1 Y'):
+    try:
+        ib = IB()
+        client_id = st.session_state.get("ibkrClientId", 1234)
+        ib.connect("127.0.0.1", 7496, clientId=client_id)
+
+        contract = Stock(ticker, "SMART", "USD")
+        ib.qualifyContracts(contract)
+        bars = ib.reqHistoricalData(
+            contract,
+            endDateTime='',
+            durationStr=duration,
+            barSizeSetting='1 day',
+            whatToShow='TRADES',
+            useRTH=True,
+            formatDate=1
+        )
+        df = util.df(bars)
+        ib.disconnect()
+
+        if df.empty:
+            return None
+        df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}, inplace=True)
+        df.set_index("date", inplace=True)
+        logger.info(f"Retrieved {len(df)} rows of historical data from IBKR for {ticker}")
+        return df
+    except Exception as e:
+        logger.warning(f"Failed to fetch IBKR historical data for {ticker}: {e}")
+        return None
+
+def fetch_ibkr_implied_volatility(ticker):
+    try:
+        ib = IB()
+        client_id = st.session_state.get("ibkrClientId", 1234)
+        ib.connect("127.0.0.1", 7496, clientId=client_id)
+
+        contract = Stock(ticker, "SMART", "USD")
+        ib.qualifyContracts(contract)
+        snapshot = ib.reqMktData(contract, "", False, False)
+        ib.sleep(2)
+        iv = snapshot.modelGreeks.impliedVolatility if snapshot.modelGreeks else None
+        ib.disconnect()
+        logger.info(f"IBKR IV: {iv}")
+        return iv
+    except Exception as e:
+        logger.warning(f"Could not fetch IV from IBKR for {ticker}: {e}")
+        return None
+
+# === Ingest Function ===
+
+def ingest_data(ticker, api_keys, use_ibkr=False):
     ticker = ticker.upper()
-    ticker_obj = yf.Ticker(ticker)
 
-    # Fetch Historical Data
-    hist = ticker_obj.history(period="1y")
-    if hist.empty:
-        error_msg = f"Historical data empty for {ticker}."
-        logger.error(error_msg)
-        st.error(error_msg)
-        return {}
+    if use_ibkr:
+        st.info(f"Attempting to fetch historical data from IBKR for {ticker}...")
+        hist = fetch_ibkr_historical_data(ticker)
+        iv = fetch_ibkr_implied_volatility(ticker)
+    else:
+        hist = None
+        iv = None
 
-    # Fetching fundamental data
-    yf_fund = ticker_obj.info
-    fmp_ratios = fetch_fmp_ratios(ticker, api_keys.get('FMP_API_KEY'))
-    alpha_data = fetch_alpha_vantage_overview(ticker, api_keys.get('ALPHA_VANTAGE_API_KEY'))
+    if hist is None or hist.empty:
+        st.warning("Using Yahoo Finance fallback.")
+        ticker_obj = yf.Ticker(ticker)
+        hist = ticker_obj.history(period="1y")
+        if hist.empty:
+            st.error(f"No price data found for {ticker}.")
+            return {}
 
-    combined_fundamentals = {
-        "Debt-to-Equity (Yahoo)": yf_fund.get("debtToEquity", "N/A"),
-        "Current Ratio (Yahoo)": yf_fund.get("currentRatio", "N/A"),
-        "ROE (%) (Yahoo)": yf_fund.get("returnOnEquity", "N/A"),
-        "Free Cash Flow (Yahoo)": yf_fund.get("freeCashFlow", "N/A"),
+    # Fundamentals
+    try:
+        yf_data = yf.Ticker(ticker).info
+    except Exception as e:
+        yf_data = {}
+        logger.warning(f"Failed to fetch Yahoo fundamentals: {e}")
+
+    fmp_ratios = fetch_fmp_ratios(ticker, api_keys.get("FMP_API_KEY"))
+    alpha_ratios = fetch_alpha_vantage_overview(ticker, api_keys.get("ALPHA_VANTAGE_API_KEY"))
+
+    fundamentals = {
+        "Debt-to-Equity (Yahoo)": yf_data.get("debtToEquity", "N/A"),
+        "Current Ratio (Yahoo)": yf_data.get("currentRatio", "N/A"),
+        "ROE (%) (Yahoo)": yf_data.get("returnOnEquity", "N/A"),
+        "Free Cash Flow (Yahoo)": yf_data.get("freeCashFlow", "N/A"),
         **fmp_ratios,
-        **alpha_data
+        **alpha_ratios
     }
 
-    st.subheader(f"Retrieved Fundamental Data for {ticker}")
-    st.json(combined_fundamentals)
+    st.subheader("Fundamentals")
+    st.json(fundamentals)
 
-    # Technical indicators calculation
+    # Technicals
     technicals = calculate_technical_indicators(hist)
-    if not technicals:
-        error_msg = f"Failed to calculate technical indicators for {ticker}."
-        logger.error(error_msg)
-        st.error(error_msg)
-        return {}
+    if iv:
+        technicals["IV (IBKR)"] = round(iv, 4)
+    else:
+        technicals["IV (IBKR)"] = "Unavailable"
 
-    st.subheader(f"Retrieved Technical Data for {ticker}")
+    st.subheader("Technicals")
     st.json(technicals)
 
     return {
-        "fundamentals": combined_fundamentals,
+        "fundamentals": fundamentals,
         "technicals": technicals,
         "history": hist
     }
