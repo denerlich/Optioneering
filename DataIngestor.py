@@ -2,17 +2,23 @@ import logging
 import yfinance as yf
 import numpy as np
 import streamlit as st
+import time
 from ib_insync import IB, Stock, util
 
 logger = logging.getLogger(__name__)
 
 # Helper to connect to IBKR (with random session-safe client ID)
-def connect_ibkr():
+def connect_ibkr(max_retries=3):
     ib = IB()
-    if "ibkrClientId" not in st.session_state:
-        st.session_state["ibkrClientId"] = np.random.randint(1000, 9999)
-    ib.connect("127.0.0.1", 7496, clientId=st.session_state["ibkrClientId"])
-    return ib
+    for attempt in range(max_retries):
+        try:
+            ib.connect("127.0.0.1", 7496, clientId=123)
+            if ib.isConnected():
+                return ib
+        except Exception as e:
+            print(f"[Attempt {attempt+1}] IBKR connection failed: {e}")
+            time.sleep(2)
+    raise RuntimeError("Unable to connect to IBKR after multiple attempts.")
 
 def fetch_ibkr_historical_data(ib, ticker, duration="1 Y"):
     contract = Stock(ticker, "SMART", "USD")
