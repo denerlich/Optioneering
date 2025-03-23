@@ -14,7 +14,6 @@ import yfinance as yf
 import asyncio
 import nest_asyncio
 import logging
-from groq import Groq  # Groq API integration
 
 # Apply nest_asyncio at the top to patch asyncio for Streamlit’s threading model
 nest_asyncio.apply()
@@ -51,16 +50,9 @@ FMP_API_KEY = st.session_state["api_keys"].get("FMP_API_KEY", "")
 ALPHA_VANTAGE_API_KEY = st.session_state["api_keys"].get("ALPHA_VANTAGE_API_KEY", "")
 GROQ_API_KEY = st.session_state["api_keys"].get("GROQ_API_KEY", "")
 
-# === Groq Client Initialization ===
-if GROQ_API_KEY:
-    groq_client = Groq(api_key=GROQ_API_KEY)
-else:
-    st.error("GROQ_API_KEY not found. Please upload a valid Excel file.")
-    st.stop()
-
 # === IBKR Connection (Import ib_insync only when needed) ===
 def connect_ibkr():
-    from ib_insync import IB, Stock, util  # Import here to avoid top-level event loop issue
+    from ib_insync import IB, Stock, util
     ib = IB()
     if "ibkrClientId" not in st.session_state:
         st.session_state["ibkrClientId"] = random.randint(1000, 9999)
@@ -69,7 +61,7 @@ def connect_ibkr():
     return ib
 
 def fetch_ibkr_stock_data(ib, ticker, duration='1 Y'):
-    from ib_insync import Stock, util  # Local import
+    from ib_insync import Stock, util
     contract = Stock(ticker, 'SMART', 'USD')
     ib.qualifyContracts(contract)
     bars = ib.reqHistoricalData(contract, endDateTime='', durationStr=duration, barSizeSetting='1 day', whatToShow='TRADES', useRTH=True)
@@ -81,7 +73,7 @@ def fetch_ibkr_stock_data(ib, ticker, duration='1 Y'):
     return df
 
 def fetch_ibkr_implied_volatility(ib, ticker):
-    from ib_insync import Stock  # Local import
+    from ib_insync import Stock
     contract = Stock(ticker, 'SMART', 'USD')
     ib.qualifyContracts(contract)
     ticker_data = ib.reqMktData(contract, '', False, False)
@@ -244,7 +236,7 @@ def calculate_options_indicators_ibkr(ib, ticker):
     return {"Average IV (Puts)": iv_snapshot}
 
 # === Grok Integration ===
-def get_grok_insight(ticker, fundamentals, technicals):
+def get_grok_insight(ticker, fundamentals, technicals, groq_client):
     prompt = f"""
     Analyze the stock {ticker} for selling put options based on the following data:
     Fundamentals: {fundamentals}
@@ -318,66 +310,72 @@ st.title("AI-Driven Options Selling Bot with Grok Integration")
 
 if not st.session_state["tickers"]:
     st.warning("Please upload an Excel file with tickers and API keys to proceed.")
-    st.stop()
+else:
+    st.sidebar.header("Adjust Thresholds")
+    thresholds = {
+        "Debt-to-Equity": st.sidebar.number_input("Max Debt-to-Equity Ratio", min_value=0.0, value=0.5, step=0.1),
+        "Current Ratio": st.sidebar.number_input("Min Current Ratio", min_value=0.0, value=1.5, step=0.1),
+        "Revenue Growth": st.sidebar.number_input("Min Revenue Growth (%)", value=10.0, step=1.0),
+        "ROE": st.sidebar.number_input("Min Return on Equity (%)", value=15.0, step=1.0),
+        "RSI_low": st.sidebar.number_input("RSI Lower Bound", min_value=0, max_value=100, value=40, step=1),
+        "RSI_high": st.sidebar.number_input("RSI Upper Bound", min_value=0, max_value=100, value=60, step=1),
+    }
 
-st.sidebar.header("Adjust Thresholds")
-thresholds = {
-    "Debt-to-Equity": st.sidebar.number_input("Max Debt-to-Equity Ratio", min_value=0.0, value=0.5, step=0.1),
-    "Current Ratio": st.sidebar.number_input("Min Current Ratio", min_value=0.0, value=1.5, step=0.1),
-    "Revenue Growth": st.sidebar.number_input("Min Revenue Growth (%)", value=10.0, step=1.0),
-    "ROE": st.sidebar.number_input("Min Return on Equity (%)", value=15.0, step=1.0),
-    "RSI_low": st.sidebar.number_input("RSI Lower Bound", min_value=0, max_value=100, value=40, step=1),
-    "RSI_high": st.sidebar.number_input("RSI Upper Bound", min_value=0, max_value=100, value=60, step=1),
-}
+    ticker_input = st.selectbox("Select Ticker Symbol", st.session_state["tickers"], index=0)
+    run_button = st.button("Run Analysis")
 
-ticker_input = st.selectbox("Select Ticker Symbol", st.session_state["tickers"], index=0)
-run_button = st.button("Run Analysis")
+    if run_button and ticker_input:
+        # Initialize Groq client only when running analysis
+        from groq import Groq
+        if not GROQ_API_KEY:
+            st.error("GROQ_API_KEY not found in the uploaded Excel file.")
+            st.stop()
+        groq_client = Groq(api_key=GROQ_API_KEY)
 
-if run_button and ticker_input:
-    ticker = ticker_input.upper()
-    ib = connect_ibkr()
-    
-    with st.spinner("Fetching data..."):
-        ibkr_hist = fetch_ibkr_stock_data(ib, ticker)
-        hist = ibkr_hist if ibkr_hist is not None and not ibkr_hist.empty else yf.Ticker(ticker).history(period="1y")
+        ticker = ticker_input.upper()
+        ib = connect_ibkr()
         
-        fundamentals_fallback = get_fundamental_data(ticker)
-        yfa = yf.Ticker(ticker)
-        adv_fund = calculate_fundamentals(yfa)
-        combined_fundamentals = {k: adv_fund.get(k, fundamentals_fallback.get(k, "N/A")) for k in set(fundamentals_fallback) | set(adv_fund)}
+        with st.spinner("Fetching data..."):
+            ibkr_hist = fetch_ibkr_stock_data(ib, ticker)
+            hist = ibkr_hist if ibkr_hist is not None and not ibkr_hist.empty else yf.Ticker(ticker).history(period="1y")
+            
+            fundamentals_fallback = get_fundamental_data(ticker)
+            yfa = yf.Ticker(ticker)
+            adv_fund = calculate_fundamentals(yfa)
+            combined_fundamentals = {k: adv_fund.get(k, fundamentals_fallback.get(k, "N/A")) for k in set(fundamentals_fallback) | set(adv_fund)}
+            
+            technicals = calculate_technical_indicators(hist)
+            options_data = calculate_options_indicators_ibkr(ib, ticker)
         
-        technicals = calculate_technical_indicators(hist)
-        options_data = calculate_options_indicators_ibkr(ib, ticker)
-    
-    ib.disconnect()
+        ib.disconnect()
 
-    fund_score, tech_score, overall_score = calculate_scores(combined_fundamentals, technicals, thresholds)
-    option_rec = get_option_recommendation(overall_score, technicals["Current Price"])
-    grok_insight = get_grok_insight(ticker, combined_fundamentals, technicals)
+        fund_score, tech_score, overall_score = calculate_scores(combined_fundamentals, technicals, thresholds)
+        option_rec = get_option_recommendation(overall_score, technicals["Current Price"])
+        grok_insight = get_grok_insight(ticker, combined_fundamentals, technicals, groq_client)
 
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.subheader("Fundamental Indicators (60%)")
-        fund_df = pd.DataFrame(list(combined_fundamentals.items()), columns=["Indicator", "Value"])
-        st.table(fund_df)
-        st.write(f"Fundamental Score: {fund_score:.1f}/6.0")
-    
-    with col2:
-        st.subheader("Technical Indicators (40%)")
-        tech_df = pd.DataFrame(list(technicals.items()), columns=["Indicator", "Value"])
-        st.table(tech_df)
-        st.write(f"Technical Score: {tech_score:.1f}/4.0")
-    
-    with col3:
-        st.subheader("AI Recommendation")
-        st.write(f"Overall Score: {overall_score:.1f}/10")
-        st.write(f"Recommended Put: {option_rec['Expiration']}, {option_rec['Delta']} Delta, Strike ${option_rec['Strike']:.2f}")
-        st.write(f"Strategy: {'Aggressive (ATM/ITM)' if overall_score >= 8 else 'Moderate (Near ATM)' if overall_score >= 6 else 'Conservative (OTM)'}")
-        st.subheader("Grok Insight")
-        st.write(grok_insight)
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.subheader("Fundamental Indicators (60%)")
+            fund_df = pd.DataFrame(list(combined_fundamentals.items()), columns=["Indicator", "Value"])
+            st.table(fund_df)
+            st.write(f"Fundamental Score: {fund_score:.1f}/6.0")
+        
+        with col2:
+            st.subheader("Technical Indicators (40%)")
+            tech_df = pd.DataFrame(list(technicals.items()), columns=["Indicator", "Value"])
+            st.table(tech_df)
+            st.write(f"Technical Score: {tech_score:.1f}/4.0")
+        
+        with col3:
+            st.subheader("AI Recommendation")
+            st.write(f"Overall Score: {overall_score:.1f}/10")
+            st.write(f"Recommended Put: {option_rec['Expiration']}, {option_rec['Delta']} Delta, Strike ${option_rec['Strike']:.2f}")
+            st.write(f"Strategy: {'Aggressive (ATM/ITM)' if overall_score >= 8 else 'Moderate (Near ATM)' if overall_score >= 6 else 'Conservative (OTM)'}")
+            st.subheader("Grok Insight")
+            st.write(grok_insight)
 
-    if not hist.empty:
-        fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
-        fig.update_layout(title=f"{ticker} Candlestick Chart", xaxis_title="Date", yaxis_title="Price")
-        st.plotly_chart(fig, use_container_width=True)
+        if not hist.empty:
+            fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
+            fig.update_layout(title=f"{ticker} Candlestick Chart", xaxis_title="Date", yaxis_title="Price")
+            st.plotly_chart(fig, use_container_width=True)
