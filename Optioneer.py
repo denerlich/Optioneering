@@ -4,6 +4,7 @@ import asyncio
 import nest_asyncio
 import logging
 from DataIngestor import ingest_data
+from DataIngestor import calculate_scores
 from LLMAdviser import get_grok_insight
 from StreamlitUI import render_ui
 
