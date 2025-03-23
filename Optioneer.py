@@ -90,7 +90,12 @@ def main():
             data = ingest_data(ticker, st.session_state["api_keys"])
             thresholds = {"Debt-to-Equity": 0.5, "Current Ratio": 1.5, "ROE": 15.0, "RSI_low": 40, "RSI_high": 60}
             fund_score, tech_score, overall_score = calculate_scores(data["fundamentals"], data["technicals"], thresholds)
-            option_rec = get_option_recommendation(overall_score, data["technicals"]["Current Price"])
+            current_price = data["technicals"].get("Current Price")
+            if current_price is not None:
+                option_rec = get_option_recommendation(overall_score, current_price)
+            else:
+                st.error("Technical data missing: Unable to retrieve 'Current Price'. Check data source.")
+                return
             data.update({"fund_score": fund_score, "tech_score": tech_score, "overall_score": overall_score, "option_rec": option_rec})
             grok_insight = get_grok_insight(ticker, data["fundamentals"], data["technicals"], st.session_state["api_keys"].get("GROQ_API_KEY", ""))
             render_ui(data, thresholds, grok_insight, ticker)
