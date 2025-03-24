@@ -7,15 +7,16 @@ import logging
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from groq import Groq
 
-# Logging
+# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Headers to avoid 403 errors
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 }
 
-@retry(wait=wait_exponential(min=2, max=5), stop=stop_after_attempt(3),
+@retry(wait=wait_exponential(multiplier=1, min=2, max=5), stop=stop_after_attempt(3),
        retry=retry_if_exception_type((requests.RequestException,)))
 def fetch_finviz_html(ticker):
     url = f"https://finviz.com/quote.ashx?t={ticker}"
@@ -64,7 +65,7 @@ def get_grok_insight(ticker, fundamentals, technicals, groq_api_key):
     Provide a brief insight on whether this is a good candidate for selling puts aggressively (ATM/ITM), moderately (near ATM), or conservatively (OTM), and suggest an expiration and Delta.
     """
     try:
-        groq_client = Groq(api_key=groq_api_key)
+        groq_client = Groq(api_key=groq_api_key)  # Ensure no unexpected 'proxies' argument
         response = groq_client.chat.completions.create(
             model="mixtral-8x7b-32768",
             messages=[{"role": "user", "content": prompt}],
