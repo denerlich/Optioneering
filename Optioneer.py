@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 import time
 import logging
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
-from groq import Groq
+import openai
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
@@ -59,7 +59,7 @@ def score_ticker(row):
         logger.debug(f"Scoring error: {e}")
         return 0, 0
 
-def get_grok_insight(ticker, fundamentals, technicals, groq_api_key):
+def get_openai_insight(ticker, fundamentals, technicals, api_key):
     prompt = f"""
     Analyze the stock {ticker} for selling put options based on the following data:
     Fundamentals: {fundamentals}
@@ -67,17 +67,18 @@ def get_grok_insight(ticker, fundamentals, technicals, groq_api_key):
     Provide a brief insight on whether this is a good candidate for selling puts aggressively (ATM/ITM), moderately (near ATM), or conservatively (OTM), and suggest an expiration and Delta.
     """
     try:
-        groq_client = Groq(api_key=groq_api_key)
-        response = groq_client.chat.completions.create(
+        openai.api_key = api_key
+        openai.api_base = "https://api.groq.com/openai/v1"
+        response = openai.ChatCompletion.create(
             model="mixtral-8x7b-32768",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200
         )
-        logger.debug(f"Groq response: {response}")
-        return response.choices[0].message.content
+        logger.debug(f"OpenAI response: {response}")
+        return response.choices[0].message["content"]
     except Exception as e:
-        logger.error(f"Groq API error: {e}")
-        return "Groq analysis unavailable."
+        logger.error(f"OpenAI API error: {e}")
+        return "LLM analysis unavailable."
 
 def process_file(file, chunk_size=100, rate_delay=1, pause_between_chunks=5):
     df = pd.read_csv(file) if file.name.endswith(".csv") else pd.read_excel(file)
@@ -99,12 +100,12 @@ def process_file(file, chunk_size=100, rate_delay=1, pause_between_chunks=5):
     return df_result.iloc[:, :78]  # Limit to BZ column
 
 def main():
-    st.set_page_config(page_title="📈 Finviz Analyzer + Groq", layout="wide")
+    st.set_page_config(page_title="📈 Finviz Analyzer + LLM", layout="wide")
     st.title("📈 Finviz Smart Analyzer")
 
     uploaded_file = st.file_uploader("Upload CSV or Excel file with tickers", type=["xlsx", "xls", "csv"])
-    groq_file = st.file_uploader("🔑 Upload Groq API Key (.txt)", type=["txt"])
-    groq_api_key = groq_file.read().decode("utf-8").strip() if groq_file else None
+    api_file = st.file_uploader("🔑 Upload Groq/OpenAI API Key (.txt)", type=["txt"])
+    api_key = api_file.read().decode("utf-8").strip() if api_file else None
 
     with st.expander("⚙️ Options"):
         chunk_size = st.number_input("Chunk Size", 10, 200, 100, 10)
@@ -115,26 +116,26 @@ def main():
         df = process_file(uploaded_file, chunk_size, rate_delay, pause_between_chunks)
         st.dataframe(df)
 
-        if groq_api_key:
-            st.subheader("🤖 Groq LLM Analysis")
+        if api_key:
+            st.subheader("🤖 LLM Analysis")
             analysis = []
             for _, row in df.iterrows():
                 fscore, tscore = score_ticker(row)
-                insight = get_grok_insight(
+                insight = get_openai_insight(
                     row["Ticker"],
                     {"P/E": row.get("P/E"), "ROE": row.get("ROE")},
                     {"RSI": row.get("RSI (14)"), "Volatility": row.get("Volatility")},
-                    groq_api_key
+                    api_key
                 )
                 analysis.append({
                     "Ticker": row["Ticker"],
                     "Fundamental Score": fscore,
                     "Technical Score": tscore,
-                    "Groq Insight": insight
+                    "LLM Insight": insight
                 })
             st.dataframe(pd.DataFrame(analysis))
         else:
-            st.warning("Please upload your Groq API key to run analysis.")
+            st.warning("Please upload your API key to run analysis.")
 
 if __name__ == "__main__":
     main()
