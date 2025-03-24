@@ -74,7 +74,7 @@ def get_groq_insight(ticker, fundamentals, technicals, api_key):
             base_url="https://api.groq.com/openai/v1"
         )
         response = client.chat.completions.create(
-            model="mixtral-8x7b-32768",
+            model="llama3-8b-8192",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
             temperature=0.5
