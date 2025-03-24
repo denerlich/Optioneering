@@ -61,7 +61,7 @@ def score_ticker(row):
 
     return fundamentals_score, technicals_score
 
-def get_openai_insight(ticker, fundamentals, technicals, api_key):
+def get_groq_insight(ticker, fundamentals, technicals, api_key):
     prompt = f"""
     Analyze the stock {ticker} for selling put options based on the following data:
     Fundamentals: {fundamentals}
@@ -69,17 +69,20 @@ def get_openai_insight(ticker, fundamentals, technicals, api_key):
     Provide a brief insight on whether this is a good candidate for selling puts aggressively (ATM/ITM), moderately (near ATM), or conservatively (OTM), and suggest an expiration and Delta.
     """
     try:
-        # Removed any proxy-related configurations
-        client = openai.OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200
+        client = openai.OpenAI(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1"
         )
-        logger.debug(f"OpenAI response: {response}")
+        response = client.chat.completions.create(
+            model="mixtral-8x7b-32768",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.5
+        )
+        logger.debug(f"Groq response: {response}")
         return response.choices[0].message.content
     except Exception as e:
-        logger.error(f"OpenAI API error: {e}")
+        logger.error(f"Groq API error: {e}")
         return "LLM analysis unavailable."
 
 def process_file(file, chunk_size=100, rate_delay=1, pause_between_chunks=5):
