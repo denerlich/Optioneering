@@ -68,20 +68,31 @@ def get_groq_insight(ticker, fundamentals, technicals, api_key):
 
     Suggest if it's suitable for selling puts aggressively (ATM/ITM), moderately (near ATM), or conservatively (OTM). Recommend expiration and Delta.
     """
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    data = {
+        "model": "llama3-8b-8192",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 200,
+        "temperature": 0.5,
+    }
+
     try:
-        client = openai.OpenAI(
-            api_key=api_key,
-            base_url="https://api.groq.com/openai/v1"
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=15
         )
-        response = client.chat.completions.create(
-            model="llama3-8b-8192",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
-            temperature=0.5
-        )
-        return response.choices[0].message.content
+        response.raise_for_status()
+        result = response.json()
+        return result["choices"][0]["message"]["content"]
     except Exception as e:
-        logger.error(f"Groq API error: {e}")
+        logger.error(f"Groq API request failed: {e}")
         return "LLM analysis unavailable."
 
 def process_file(file, chunk_size, rate_delay, pause_between_chunks):
