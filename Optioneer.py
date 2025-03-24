@@ -2,28 +2,21 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import io
 import time
 import logging
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from groq import Groq
 
-# Setup logging
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Headers to avoid 403 errors
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 }
 
-@retry(
-    wait=wait_exponential(multiplier=1, min=2, max=5),
-    stop=stop_after_attempt(3),
-    retry=retry_if_exception_type((requests.RequestException,))
-)
+@retry(wait=wait_exponential(min=2, max=5), stop=stop_after_attempt(3),
+       retry=retry_if_exception_type((requests.RequestException,)))
 def fetch_finviz_html(ticker):
     url = f"https://finviz.com/quote.ashx?t={ticker}"
     response = requests.get(url, headers=HEADERS, timeout=10)
@@ -37,13 +30,10 @@ def extract_finviz_data(ticker):
         table = soup.find("table", class_="snapshot-table2")
         if not table:
             return {"Ticker": ticker, "Error": "Data table not found"}
-
         cells = table.find_all("td")
         data = {"Ticker": ticker}
         for i in range(0, len(cells), 2):
-            key = cells[i].get_text(strip=True)
-            val = cells[i+1].get_text(strip=True)
-            data[key] = val
+            data[cells[i].get_text(strip=True)] = cells[i+1].get_text(strip=True)
         return data
     except Exception as e:
         return {"Ticker": ticker, "Error": str(e)}
@@ -59,13 +49,8 @@ def score_ticker(row):
         roe = float(row.get("ROE", "").replace("%", "") or 0)
         iv = float(row.get("Volatility", "0").split()[0].replace("%", "") or 0)
 
-        fundamentals_score = 0
-        technicals_score = 0
-
-        if pe and pe < 20: fundamentals_score += 1
-        if roe and roe > 10: fundamentals_score += 1
-        if rsi and 30 < rsi < 50: technicals_score += 1
-        if iv and iv > 1.5: technicals_score += 1
+        fundamentals_score = int(pe < 20) + int(roe > 10)
+        technicals_score = int(30 < rsi < 50) + int(iv > 1.5)
 
         return fundamentals_score, technicals_score
     except:
@@ -96,22 +81,18 @@ def process_file(file, chunk_size=100, rate_delay=1, pause_between_chunks=5):
     st.info(f"{len(tickers)} tickers found. Starting data extraction in chunks of {chunk_size}...")
 
     results = []
-    ticker_chunks = list(chunk_list(tickers, chunk_size))
-
-    for chunk_idx, chunk in enumerate(ticker_chunks):
-        st.info(f"📦 Processing chunk {chunk_idx + 1}/{len(ticker_chunks)}...")
+    for chunk_idx, chunk in enumerate(chunk_list(tickers, chunk_size)):
+        st.info(f"📦 Processing chunk {chunk_idx + 1} of {len(tickers)//chunk_size + 1}")
         for i, ticker in enumerate(chunk):
-            with st.spinner(f"Fetching {ticker} ({i + 1}/{len(chunk)})..."):
+            with st.spinner(f"Fetching {ticker}... ({i + 1}/{len(chunk)})"):
                 row_data = extract_finviz_data(ticker)
                 results.append(row_data)
                 time.sleep(rate_delay)
-        if chunk_idx < len(ticker_chunks) - 1:
-            st.warning(f"Sleeping {pause_between_chunks}s between chunks to avoid rate limits...")
+        if chunk_idx < len(tickers) // chunk_size:
             time.sleep(pause_between_chunks)
 
     df_result = pd.DataFrame(results)
-    df_result = df_result.iloc[:, :78]  # Trim columns to BZ max
-    return df_result
+    return df_result.iloc[:, :78]  # Limit to BZ column
 
 def main():
     st.set_page_config(page_title="📈 Finviz Analyzer + Groq", layout="wide")
@@ -123,23 +104,18 @@ def main():
 
     with st.expander("⚙️ Options"):
         chunk_size = st.number_input("Chunk Size", 10, 200, 100, 10)
-        rate_delay = st.number_input("Delay per Ticker (s)", 0.5, 5.0, 1.0, 0.5)
-        pause_between_chunks = st.number_input("Pause Between Chunks (s)", 2, 30, 5, 1)
+        rate_delay = st.number_input("Delay between requests (sec)", 0.5, 5.0, 1.0, 0.5)
+        pause_between_chunks = st.number_input("Pause between chunks (sec)", 2, 30, 5, 1)
 
     if uploaded_file and st.button("🔍 Extract + Analyze"):
-        df = process_file(
-            uploaded_file,
-            chunk_size=int(chunk_size),
-            rate_delay=float(rate_delay),
-            pause_between_chunks=int(pause_between_chunks)
-        )
+        df = process_file(uploaded_file, chunk_size, rate_delay, pause_between_chunks)
         st.dataframe(df)
 
         if groq_api_key:
-            analysis = []
             st.subheader("🤖 Groq LLM Analysis")
+            analysis = []
             for _, row in df.iterrows():
-                fundamentals_score, technicals_score = score_ticker(row)
+                fscore, tscore = score_ticker(row)
                 insight = get_grok_insight(
                     row["Ticker"],
                     {"P/E": row.get("P/E"), "ROE": row.get("ROE")},
@@ -148,13 +124,13 @@ def main():
                 )
                 analysis.append({
                     "Ticker": row["Ticker"],
-                    "Fundamental Score": fundamentals_score,
-                    "Technical Score": technicals_score,
+                    "Fundamental Score": fscore,
+                    "Technical Score": tscore,
                     "Groq Insight": insight
                 })
             st.dataframe(pd.DataFrame(analysis))
         else:
-            st.warning("Upload a Groq API key to enable LLM-based analysis.")
+            st.warning("Please upload your Groq API key to run analysis.")
 
 if __name__ == "__main__":
     main()
