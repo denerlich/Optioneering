@@ -69,6 +69,7 @@ def get_openai_insight(ticker, fundamentals, technicals, api_key):
     Provide a brief insight on whether this is a good candidate for selling puts aggressively (ATM/ITM), moderately (near ATM), or conservatively (OTM), and suggest an expiration and Delta.
     """
     try:
+        # Removed any proxy-related configurations
         client = openai.OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model="gpt-4",
