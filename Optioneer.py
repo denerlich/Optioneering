@@ -45,19 +45,21 @@ def chunk_list(lst, chunk_size):
         yield lst[i:i + chunk_size]
 
 def score_ticker(row):
-    try:
-        pe = float(row.get("P/E", "").replace("%", "") or 0)
-        rsi = float(row.get("RSI (14)", "").replace("%", "") or 0)
-        roe = float(row.get("ROE", "").replace("%", "") or 0)
-        iv = float(row.get("Volatility", "0").split()[0].replace("%", "") or 0)
+    def safe_float(val):
+        try:
+            return float(str(val).replace("%", "").replace(",", ""))
+        except:
+            return 0.0
 
-        fundamentals_score = int(pe < 20) + int(roe > 10)
-        technicals_score = int(30 < rsi < 50) + int(iv > 1.5)
+    pe = safe_float(row.get("P/E"))
+    rsi = safe_float(row.get("RSI (14)"))
+    roe = safe_float(row.get("ROE"))
+    iv = safe_float(str(row.get("Volatility", "0")).split()[0])
 
-        return fundamentals_score, technicals_score
-    except Exception as e:
-        logger.debug(f"Scoring error: {e}")
-        return 0, 0
+    fundamentals_score = int(pe < 20) + int(roe > 10)
+    technicals_score = int(30 < rsi < 50) + int(iv > 1.5)
+
+    return fundamentals_score, technicals_score
 
 def get_openai_insight(ticker, fundamentals, technicals, api_key):
     prompt = f"""
@@ -67,15 +69,14 @@ def get_openai_insight(ticker, fundamentals, technicals, api_key):
     Provide a brief insight on whether this is a good candidate for selling puts aggressively (ATM/ITM), moderately (near ATM), or conservatively (OTM), and suggest an expiration and Delta.
     """
     try:
-        openai.api_key = api_key
-        openai.api_base = "https://api.groq.com/openai/v1"
-        response = openai.ChatCompletion.create(
-            model="mixtral-8x7b-32768",
+        client = openai.OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200
         )
         logger.debug(f"OpenAI response: {response}")
-        return response.choices[0].message["content"]
+        return response.choices[0].message.content
     except Exception as e:
         logger.error(f"OpenAI API error: {e}")
         return "LLM analysis unavailable."
@@ -87,7 +88,7 @@ def process_file(file, chunk_size=100, rate_delay=1, pause_between_chunks=5):
 
     results = []
     for chunk_idx, chunk in enumerate(chunk_list(tickers, chunk_size)):
-        st.info(f"📦 Processing chunk {chunk_idx + 1} of {len(tickers)//chunk_size + 1}")
+        st.info(f"📦 Processing chunk {chunk_idx + 1} of {(len(tickers)-1)//chunk_size + 1}")
         for i, ticker in enumerate(chunk):
             with st.spinner(f"Fetching {ticker}... ({i + 1}/{len(chunk)})"):
                 row_data = extract_finviz_data(ticker)
@@ -104,7 +105,7 @@ def main():
     st.title("📈 Finviz Smart Analyzer")
 
     uploaded_file = st.file_uploader("Upload CSV or Excel file with tickers", type=["xlsx", "xls", "csv"])
-    api_file = st.file_uploader("🔑 Upload Groq/OpenAI API Key (.txt)", type=["txt"])
+    api_file = st.file_uploader("🔑 Upload OpenAI API Key (.txt)", type=["txt"])
     api_key = api_file.read().decode("utf-8").strip() if api_file else None
 
     with st.expander("⚙️ Options"):
@@ -135,7 +136,7 @@ def main():
                 })
             st.dataframe(pd.DataFrame(analysis))
         else:
-            st.warning("Please upload your API key to run analysis.")
+            st.warning("Please upload your OpenAI API key to run analysis.")
 
 if __name__ == "__main__":
     main()
