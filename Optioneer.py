@@ -126,11 +126,13 @@ def main():
             analysis = []
             for _, row in df.iterrows():
                 fscore, tscore = score_ticker(row)
-                insight = get_openai_insight(
+                insight = get_groq_insight(
                     row["Ticker"],
                     {"P/E": row.get("P/E"), "ROE": row.get("ROE")},
                     {"RSI": row.get("RSI (14)"), "Volatility": row.get("Volatility")},
                     api_key
+                )
+
                 )
                 analysis.append({
                     "Ticker": row["Ticker"],
