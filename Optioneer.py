@@ -8,7 +8,7 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 from groq import Groq
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Headers to avoid 403 errors
@@ -37,6 +37,7 @@ def extract_finviz_data(ticker):
             data[cells[i].get_text(strip=True)] = cells[i+1].get_text(strip=True)
         return data
     except Exception as e:
+        logger.debug(f"Failed to extract data for {ticker}: {e}")
         return {"Ticker": ticker, "Error": str(e)}
 
 def chunk_list(lst, chunk_size):
@@ -54,7 +55,8 @@ def score_ticker(row):
         technicals_score = int(30 < rsi < 50) + int(iv > 1.5)
 
         return fundamentals_score, technicals_score
-    except:
+    except Exception as e:
+        logger.debug(f"Scoring error: {e}")
         return 0, 0
 
 def get_grok_insight(ticker, fundamentals, technicals, groq_api_key):
@@ -65,12 +67,13 @@ def get_grok_insight(ticker, fundamentals, technicals, groq_api_key):
     Provide a brief insight on whether this is a good candidate for selling puts aggressively (ATM/ITM), moderately (near ATM), or conservatively (OTM), and suggest an expiration and Delta.
     """
     try:
-        groq_client = Groq(api_key=groq_api_key)  # Ensure no unexpected 'proxies' argument
+        groq_client = Groq(api_key=groq_api_key)
         response = groq_client.chat.completions.create(
             model="mixtral-8x7b-32768",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200
         )
+        logger.debug(f"Groq response: {response}")
         return response.choices[0].message.content
     except Exception as e:
         logger.error(f"Groq API error: {e}")
